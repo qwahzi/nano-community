@@ -13,9 +13,118 @@ Links & notes for recurring live discussions about Nano development. Includes di
 
 #### Table of Contents
 
+- [October 17th, 2023](#october-17th-2023)
 - [October 10th, 2023](#october-10th-2023)
 - [October 3rd, 2023](#october-3rd-2023)
 - [September 26th, 2023](#september-26th-2023)
+
+## October 17th, 2023
+
+Source: <a href="https://x.com/i/spaces/1rmxPMZVNMZKN" target="_blank">https://x.com/i/spaces/1rmxPMZVNMZKN</a>
+
+**V26 Plan**
+
+- What's the planned scope?
+
+  - Probably the vote hinting improvements by itself, once tested in beta
+
+  - Piotr thinks we should also add the signature checking change
+
+  - Piotr: Something else to include might be the frontier server in the stateless bootstrapper. Since we need two versions: 1) to introduce the server (frontier_req and frontier_response inside the message format), 2) using the server + removing legacy (e.g. in V27). Not coded yet, but Piotr thinks it could be done in a few days
+
+  - Maybe the block processor (block pipeline) changes, but there's still more work to be done on that, so it would probably delay the release. Probably best to save that for the next release 
+
+  - Optimistically feature complete in the next week or two, then more testing, then a release
+
+**Colin**
+
+- Didn't get as much done as he wanted, but did look at the filesystem PR to try to re-enable the test that was disabled. That disabled test pointed out a lack of good error handling when the ledger opens on startup. Needed a way to reliably cause that situation (file inaccessible or can't be created), to then handle it more gracefully
+
+  - Previously done via an invalid path, but Colin found that difficult to reproduce in the C++ filesystem
+
+  - Took a different strategy of modifying the permissions on a file (to make it inaccessible), and then running the test
+
+  - Should be ready to be rebased soon, will work with Ricki to get it done
+
+**Bob**
+
+- Last week we talked about how the publishing rate impacts the confirmation rate, and one suggestion was that it might be related to how LMDB operates, and that RocksDB would perform better. So Bob worked on adding RocksDB support to his NanoLab test suite. Got that working and ran a few experiments
+
+  - Found that RocksDB doesn't perform better than LMDB in most test cases
+
+  - Testing screenshots here: [2 vCPU test](https://twitter.com/gr0vity_dev/status/1714281877614510429), [6 vCPU test](https://twitter.com/gr0vity_dev/status/1714282116366922031)
+
+  - Ran a 6 vCPU test, and confirmation rate & publishing rate became equal (for both RocksDB & LMDB)
+
+  - Conclusion: The limiting factor appears to be CPU, not disk IO
+
+- Did some other tests for other pull requests (e.g. on removing multiple threads for signature checking). Interestingly this single-threaded signature checking branch ran faster than the current develop branch
+
+  - Currently we do the state block signature checking twice (once in the block processor & once in the ledger processor). And in the new branch, it's only done in the ledger processor. Might explain why it ran faster
+
+  - Reduces complexity a lot AND it's slightly faster, so it's a win-win PR
+
+**Piotr**
+
+- Mostly worked on an experiment with C++ 20: reimplementing the transport layer (networking classes), which is currently intermingled with the node code. Wanted to extract it as a separate library that keeps a very minimal interface to the rest of the node. 
+
+  - The benefit would be that compilation times would improve, and unnecessary recompilations would reduce (since the network code wouldn't be depending on the rest of the node)
+
+  - Also wanted to hide some dependencies so that the node wouldn't be exposed to Boost ASIO, so that in the future if the C++ standard starts incorporating networking stuff, we could just switch
+
+  - What Piotr learned is that the current support for coroutines is fine (in the latest Xcode version). That was the big hold up before, Mac didn't support it
+
+  - This is really good news since it has been a big pain point historically. Colin tried to use the Boost coroutines way back, but it didn't work very well. It's really interesting that we might be able to use it now, because the network callback code is a big mess
+
+  - Piotr's branch would separate the node code and allow for easier experimentation in the networking library
+
+  - This branch doesn't run yet, but it seems like the right approach to take. It seems like Boost ASIO already separates coroutines in a sufficient matter. There's a proposal for C++ 23 (or 25) that will incorporate network, and it's based on the stuff already done in Boost. So one day if we want to switch, it should be very easy
+
+  - Colin: Another thing on network componentization: There may be a point where we could use the Rust language for doing the networking code. The reason for that is because the networking code is the most risky part of the code - it involves a lot of manual byte manipulation that comes directly off the internet (untrusted/risky). If the code was done in a safer language like Rust we could maybe interop with it. 
+
+  - Piotr: If we design the C++ interface properly, it would definitely be possible to interop with Rust code. It would be possible to use the Rust tokio runtime (not available for C++) to process networking stuff. And Tokio has very good tools for network debugging
+
+  - Has in the back of his head the idea of supporting QUIC (networking protocol based on UDP), so trying to design his code in a way that would make the transition painless
+  
+**Gustav**
+
+- Finds Piotr's experimental work to be very exciting, because he's basically working on the same thing in the opposite direction (Rust communicating with C++ & separating the network library). Could maybe even reuse the same codebase if it can be done in Rust
+
+- The node code sometimes uses the socket class directly, and sometimes channels, so Gustav has started with removing access to the socket class (because it's simpler if only channels are used for network communication). Piotr is taking the same direction on the C++ side
+
+  - The problem is that we'd have to get rid of legacy bootstrap to do it cleanly/properly, because it does a hacky way of establishing communication. On initial connection it sends a special message (we don't handshake), and then the whole socket/connection switches to the special mode (sending custom messages only using bootstrap). It can be ported to the stateless bootstrap that is used in ascending bootstrap mode, but it'd take work [see "Other Discussion" section]
+
+- Worked mainly on the active transactions class (it's a pretty big class & made it bigger). Moved all the code from the election class that works with infrastructure into the active transactions. This was necessary because of bi-directional dependencies between election & active transaction. Will bring it over to Rust like that, and then split it up again in Rust once everything is ported
+
+- Activated the block processor in Rust & is also working on the async network code again
+
+**Other Discussion**
+
+- Colin: Should we test disabling legacy bootstrap completely, to see if it's necessary at this point? Would be a useful stress test (especially the desynced network tests). The only advantage that legacy has at the moment is that you can ask for accounts by age & in an order (which should be easy to port according to Piotr)
+
+  - Bob noticed that the hinted election improvements on Piotr's branch queries hashes with the legacy bootstrapper, but it is not working very well
+
+  - Piotr: It may be left over from old code that Piotr saw - there's node behavior that when we see a vote for a hash that we don't have a block for yet, we use lazy bootstrap to submit a hash and then bootstrap that hash. Piotr assumed that worked, but hasn't tested it himself. Possible that it doesn't work well. Colin was trying to do something like we do with the ascending bootstrapper, but it never really got finished
+
+  - Bob tried commenting out the above code, and it didn't appear to have any visible change in his desynced network tests (no faster, no slower)
+
+  - Conclusion: We probably should move to stateless bootstrap anyways, and there should be no major breaking points. 1) We might be able to axe the lazy bootstrap entirely, and 2) the conversion to using coroutines would clean things up & encapsulate all the networking code in a modular format
+
+- Colin: On using new fancy features in C++ 20 / the actual C++ modules that are supposed to help with compile times & separate code?
+
+  - Piotr saw reports that they improved compilation times 10x, but they were only available in the Microsoft compiler at the time
+
+- What's still needed to get vote hinting merged (& then beta tested)?
+
+  - That PR is complete and can be merged if it looks good. The next beta build should then happen the same day, and testing can hopefully begin
+
+  - Piotr thinks this will get us ~60% of the way to having a stable network under non-ideal conditions (the next 30% will probably be Colin's block pipeline change). There's still some stuff to add, like proper prioritization & handling of network traffic. There are also some errors that still need to be handled cleanly (as discussed in a previous live space), but we don't have to implement all of that to significantly improve stability under network load (a commercial grade requirement)
+
+- Colin wants to look at Gustav's code, because there was a discussion on not liking the push method of code (pushing it through function objects). Instead doing it the other direction was good. The push method was used because of the problem of this signature checking thing - it does a thread handoff & you have to wait for it to complete. Unless you're using coroutines, you can't really make that functional. If signature checking is done normal, then it can be done functional
+
+  - The problem with using coroutines in block processor would be that it would require us to modify LDMB or RocksDB to be able to communicate with the asynchronous runtime, which might not be realistic/easy to do
+
+  - Gustav also thinks that coroutines' best usecase is IO-bound workloads, and because signature checking is CPU bound he doesn't think we'd gain anything with them
 
 ## October 10th, 2023
 
